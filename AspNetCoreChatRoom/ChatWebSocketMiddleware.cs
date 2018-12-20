@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -11,7 +12,9 @@ namespace AspNetCoreChatRoom
 {
     public class ChatWebSocketMiddleware
     {
-        private static ConcurrentDictionary<string, WebSocket> _sockets = new ConcurrentDictionary<string, WebSocket>();
+        public const int BUFFER_SIZE = 4016;
+        private static ConcurrentDictionary<KeyValuePair<string, string>, WebSocket> _sockets = new ConcurrentDictionary<KeyValuePair<string, string>, WebSocket>();
+        public static string userName { get; set; }
 
         private readonly RequestDelegate _next;
 
@@ -19,7 +22,7 @@ namespace AspNetCoreChatRoom
         {
             _next = next;
         }
-
+        
         public async Task Invoke(HttpContext context)
         {
             if (!context.WebSockets.IsWebSocketRequest)
@@ -27,19 +30,16 @@ namespace AspNetCoreChatRoom
                 await _next.Invoke(context);
                 return;
             }
-
+            
             CancellationToken ct = context.RequestAborted;
             WebSocket currentSocket = await context.WebSockets.AcceptWebSocketAsync();
             var socketId = Guid.NewGuid().ToString();
 
-            _sockets.TryAdd(socketId, currentSocket);
+            _sockets.TryAdd(new KeyValuePair<string, string>(socketId, userName), currentSocket);
 
             while (true)
             {
-                if (ct.IsCancellationRequested)
-                {
-                    break;
-                }
+                if (ct.IsCancellationRequested){  break;  }
 
                 var response = await ReceiveStringAsync(currentSocket, ct);
                 if(string.IsNullOrEmpty(response))
@@ -59,15 +59,19 @@ namespace AspNetCoreChatRoom
                         continue;
                     }
 
-                    await SendStringAsync(socket.Value, response, ct);
+                        if (response.Contains("show"))
+                        {
+                            foreach (var s in _sockets)
+                            {
+                                SendStringAsync(socket.Value, s.ToString(), ct).Wait();
+                            }
+                        }
+
+                        await SendStringAsync(socket.Value, response, ct);
                 }
             }
 
-            WebSocket dummy;
-            _sockets.TryRemove(socketId, out dummy);
-
             await currentSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", ct);
-            currentSocket.Dispose();
         }
 
         private static Task SendStringAsync(WebSocket socket, string data, CancellationToken ct = default(CancellationToken))
@@ -79,27 +83,20 @@ namespace AspNetCoreChatRoom
 
         private static async Task<string> ReceiveStringAsync(WebSocket socket, CancellationToken ct = default(CancellationToken))
         {
-            var buffer = new ArraySegment<byte>(new byte[8192]);
-            using (var ms = new MemoryStream())
+            var buffer = new ArraySegment<byte>(new byte[BUFFER_SIZE]);
+            using (var message = new MemoryStream())
             {
                 WebSocketReceiveResult result;
-                do
-                {
+                
+
                     ct.ThrowIfCancellationRequested();
-
                     result = await socket.ReceiveAsync(buffer, ct);
-                    ms.Write(buffer.Array, buffer.Offset, result.Count);
-                }
-                while (!result.EndOfMessage);
+                    message.Write(buffer.Array, buffer.Offset, result.Count);
 
-                ms.Seek(0, SeekOrigin.Begin);
-                if (result.MessageType != WebSocketMessageType.Text)
-                {
-                    return null;
-                }
+                if (result.MessageType != WebSocketMessageType.Text){   return null;    }
 
-                // Encoding UTF8: https://tools.ietf.org/html/rfc6455#section-5.6
-                using (var reader = new StreamReader(ms, Encoding.UTF8))
+                message.Seek(0, SeekOrigin.Begin);
+                using (var reader = new StreamReader(message, Encoding.UTF8))
                 {
                     return await reader.ReadToEndAsync();
                 }

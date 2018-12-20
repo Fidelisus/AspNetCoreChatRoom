@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using System;
 
 namespace AspNetCoreChatRoom.Controllers
 {
@@ -11,8 +12,9 @@ namespace AspNetCoreChatRoom.Controllers
         }
 
         [HttpPost]
-        public IActionResult Index(string username)
+        public IActionResult Index(string username, string password)
         {
+            ChatWebSocketMiddleware.userName = username;
             return View("Index", username);
         }
 
